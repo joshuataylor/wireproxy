@@ -209,7 +209,7 @@ func main() {
 	}
 	parser := argparse.NewParser("wireproxy", "Userspace wireguard client for proxying")
 
-	config := parser.String("c", "config", &argparse.Options{Help: "Path of configuration file"})
+	configs := parser.StringList("c", "config", &argparse.Options{Help: "Path of configuration file (can be specified multiple times)"})
 	silent := parser.Flag("s", "silent", &argparse.Options{Help: "Silent mode"})
 	daemon := parser.Flag("d", "daemon", &argparse.Options{Help: "Make wireproxy run in background"})
 	info := parser.String("i", "info", &argparse.Options{Help: "Specify the address and port for exposing health status"})
@@ -227,9 +227,9 @@ func main() {
 		return
 	}
 
-	if *config == "" {
+	if len(*configs) == 0 {
 		if path, config_exist := configFilePath(); config_exist {
-			*config = path
+			*configs = []string{path}
 		} else {
 			fmt.Println("configuration path is required")
 			return
@@ -240,9 +240,13 @@ func main() {
 		lock("read-config")
 	}
 
-	conf, err := wireproxy.ParseConfig(*config)
-	if err != nil {
-		log.Fatal(err)
+	var confs []*wireproxy.Configuration
+	for _, configPath := range *configs {
+		conf, err := wireproxy.ParseConfig(configPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		confs = append(confs, conf)
 	}
 
 	if *configTest {
@@ -250,7 +254,11 @@ func main() {
 		return
 	}
 
-	lockNetwork(conf.Routines, info)
+	var allRoutines []wireproxy.RoutineSpawner
+	for _, conf := range confs {
+		allRoutines = append(allRoutines, conf.Routines...)
+	}
+	lockNetwork(allRoutines, info)
 
 	if isDaemonProcess {
 		os.Stdout, _ = os.Open(os.DevNull)
@@ -277,26 +285,30 @@ func main() {
 		logLevel = device.LogLevelSilent
 	}
 
-	lock("ready", tlsFilePaths(conf.Routines)...)
+	lock("ready", tlsFilePaths(allRoutines)...)
 
-	tun, err := wireproxy.StartWireguard(conf, logLevel)
-	if err != nil {
-		log.Fatal(err)
-	}
+	for _, conf := range confs {
+		tun, err := wireproxy.StartWireguard(conf, logLevel)
+		if err != nil {
+			log.Fatal(err)
+		}
 
-	for _, spawner := range conf.Routines {
-		go spawner.SpawnRoutine(tun)
-	}
+		for _, spawner := range conf.Routines {
+			go spawner.SpawnRoutine(tun)
+		}
 
-	tun.StartPingIPs()
+		tun.StartPingIPs()
 
-	if *info != "" {
-		go func() {
-			err := http.ListenAndServe(*info, tun)
-			if err != nil {
-				panic(err)
-			}
-		}()
+		if *info != "" {
+			go func() {
+				err := http.ListenAndServe(*info, tun)
+				if err != nil {
+					panic(err)
+				}
+			}()
+			// only bind info endpoint to the first tunnel
+			*info = ""
+		}
 	}
 
 	<-ctx.Done()
