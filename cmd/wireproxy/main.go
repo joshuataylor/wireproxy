@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -198,12 +199,10 @@ func main() {
 	}()
 
 	exePath := executablePath()
-	lock("boot")
 
 	isDaemonProcess := len(os.Args) > 1 && os.Args[1] == daemonProcess
 	args := os.Args
 	if isDaemonProcess {
-		lock("boot-daemon")
 		args = []string{args[0]}
 		args = append(args, os.Args[2:]...)
 	}
@@ -213,6 +212,7 @@ func main() {
 	silent := parser.Flag("s", "silent", &argparse.Options{Help: "Silent mode"})
 	daemon := parser.Flag("d", "daemon", &argparse.Options{Help: "Make wireproxy run in background"})
 	info := parser.String("i", "info", &argparse.Options{Help: "Specify the address and port for exposing health status"})
+	logFile := parser.String("l", "log", &argparse.Options{Help: "Path to log file for verbose debugging output"})
 	printVerison := parser.Flag("v", "version", &argparse.Options{Help: "Print version"})
 	configTest := parser.Flag("n", "configtest", &argparse.Options{Help: "Configtest mode. Only check the configuration file for validity."})
 
@@ -234,6 +234,21 @@ func main() {
 			fmt.Println("configuration path is required")
 			return
 		}
+	}
+
+	// Open log file before sandboxing (the FD remains writable through landlock/pledge)
+	var logFileHandle *os.File
+	if *logFile != "" {
+		logFileHandle, err = os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			log.Fatalf("Failed to open log file: %s", err)
+		}
+	}
+
+	if isDaemonProcess {
+		lock("boot-daemon")
+	} else {
+		lock("boot")
 	}
 
 	if !*daemon {
@@ -276,6 +291,15 @@ func main() {
 		return
 	}
 
+	// Set up logging output
+	var logWriter io.Writer = os.Stderr
+	if logFileHandle != nil {
+		mw := io.MultiWriter(os.Stderr, logFileHandle)
+		log.SetOutput(mw)
+		wireproxy.SetLogOutput(mw)
+		logWriter = mw
+	}
+
 	// Wireguard doesn't allow configuring which FD to use for logging
 	// https://github.com/WireGuard/wireguard-go/blob/master/device/logger.go#L39
 	// so redirect STDOUT to STDERR, we don't want to print anything to STDOUT anyways
@@ -288,7 +312,7 @@ func main() {
 	lock("ready", tlsFilePaths(allRoutines)...)
 
 	for _, conf := range confs {
-		tun, err := wireproxy.StartWireguard(conf, logLevel)
+		tun, err := wireproxy.StartWireguard(conf, logLevel, logWriter)
 		if err != nil {
 			log.Fatal(err)
 		}

@@ -36,6 +36,11 @@ import (
 // errorLogger is the logger to print error message
 var errorLogger = log.New(os.Stderr, "ERROR: ", log.LstdFlags)
 
+// SetLogOutput sets the output writer for all loggers in the package.
+func SetLogOutput(w io.Writer) {
+	errorLogger = log.New(w, "ERROR: ", log.LstdFlags)
+}
+
 // CredentialValidator stores the authentication data of a socks5 proxy
 type CredentialValidator struct {
 	username string
@@ -121,13 +126,15 @@ func (d VirtualTun) ResolveAddrWithContext(ctx context.Context, name string) (*n
 // Resolve resolves a hostname and returns an IP.
 // DNS traffic may or may not be routed depending on VirtualTun's setting
 func (d VirtualTun) Resolve(ctx context.Context, name string) (context.Context, net.IP, error) {
-	log.Printf("Resolving address for %s\n", name)
+	log.Printf("Resolving address for %s", name)
 
 	addr, err := d.ResolveAddrWithContext(ctx, name)
 	if err != nil {
+		log.Printf("Resolution failed for %s: %s", name, err)
 		return nil, nil, err
 	}
 
+	log.Printf("Resolved %s -> %s", name, addr)
 	return ctx, addr.AsSlice(), nil
 }
 
@@ -197,6 +204,7 @@ func (d VirtualTun) routedSocks5Dial(router *DomainRouter) func(context.Context,
 
 // SpawnRoutine spawns a socks5 server.
 func (config *Socks5Config) SpawnRoutine(vt *VirtualTun) {
+	log.Printf("Starting SOCKS5 proxy on %s", config.BindAddress)
 	var authMethods []socks5.Authenticator
 	if username := config.Username; username != "" {
 		authMethods = append(authMethods, socks5.UserPassAuthenticator{
@@ -235,6 +243,7 @@ func (config *Socks5Config) SpawnRoutine(vt *VirtualTun) {
 
 // SpawnRoutine spawns a http server.
 func (config *HTTPConfig) SpawnRoutine(vt *VirtualTun) {
+	log.Printf("Starting HTTP proxy on %s", config.BindAddress)
 	router := NewDomainRouter(config.TunnelDomains, config.LogDomains)
 	server := &HTTPServer{
 		config: config,
@@ -283,6 +292,7 @@ func tcpClientForward(vt *VirtualTun, raddr *addressPort, conn net.Conn) {
 	}
 
 	tcpAddr := net.TCPAddrFromAddrPort(*target)
+	log.Printf("TCP client tunnel: connecting to %s", tcpAddr)
 
 	sconn, err := vt.Tnet.DialTCP(tcpAddr)
 	if err != nil {
@@ -316,6 +326,7 @@ func STDIOTcpForward(vt *VirtualTun, raddr *addressPort, input *os.File, output 
 
 // SpawnRoutine spawns a local TCP server which acts as a proxy to the specified target
 func (conf *TCPClientTunnelConfig) SpawnRoutine(vt *VirtualTun) {
+	log.Printf("TCP client tunnel listening on %s, forwarding to %s", conf.BindAddress, conf.Target)
 	raddr, err := parseAddressPort(conf.Target)
 	if err != nil {
 		log.Fatal(err)
@@ -355,6 +366,7 @@ func tcpServerForward(vt *VirtualTun, raddr *addressPort, conn net.Conn) {
 	}
 
 	tcpAddr := net.TCPAddrFromAddrPort(*target)
+	log.Printf("TCP server tunnel: forwarding to %s", tcpAddr)
 
 	sconn, err := net.DialTCP("tcp", nil, tcpAddr)
 	if err != nil {
@@ -370,6 +382,7 @@ func tcpServerForward(vt *VirtualTun, raddr *addressPort, conn net.Conn) {
 
 // SpawnRoutine spawns a TCP server on wireguard which acts as a proxy to the specified target
 func (conf *TCPServerTunnelConfig) SpawnRoutine(vt *VirtualTun) {
+	log.Printf("TCP server tunnel listening on port %d, forwarding to %s", conf.ListenPort, conf.Target)
 	raddr, err := parseAddressPort(conf.Target)
 	if err != nil {
 		log.Fatal(err)
@@ -564,6 +577,8 @@ func (d VirtualTun) pingIPs() {
 					return
 				}
 			}
+
+			log.Printf("Ping response from %s: OK", addr)
 
 			d.PingRecordLock.Lock()
 			d.PingRecord[addr.String()] = uint64(time.Now().Unix())

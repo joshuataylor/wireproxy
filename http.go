@@ -57,6 +57,7 @@ func (s *HTTPServer) handleConn(req *http.Request, conn net.Conn) (peer net.Conn
 		addr = net.JoinHostPort(addr, port)
 	}
 
+	log.Printf("HTTP CONNECT tunnel to %s", addr)
 	peer, err = s.dial("tcp", addr)
 	if err != nil {
 		return peer, fmt.Errorf("tun tcp dial failed: %w", err)
@@ -78,6 +79,7 @@ func (s *HTTPServer) handle(req *http.Request) (peer net.Conn, err error) {
 		addr = net.JoinHostPort(addr, port)
 	}
 
+	log.Printf("HTTP proxy request to %s", addr)
 	peer, err = s.dial("tcp", addr)
 	if err != nil {
 		return peer, fmt.Errorf("tun tcp dial failed: %w", err)

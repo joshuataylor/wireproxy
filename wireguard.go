@@ -3,6 +3,8 @@ package wireproxy
 import (
 	"bytes"
 	"fmt"
+	"io"
+	"log"
 	"sync"
 
 	"net/netip"
@@ -59,30 +61,55 @@ func CreateIPCRequest(conf *DeviceConfig) (*DeviceSetting, error) {
 	return setting, nil
 }
 
+func newDeviceLogger(level int, w io.Writer) *device.Logger {
+	logger := &device.Logger{Verbosef: device.DiscardLogf, Errorf: device.DiscardLogf}
+	logf := func(prefix string) func(string, ...any) {
+		return log.New(w, prefix+": ", log.Ldate|log.Ltime).Printf
+	}
+	if level >= device.LogLevelVerbose {
+		logger.Verbosef = logf("DEBUG")
+	}
+	if level >= device.LogLevelError {
+		logger.Errorf = logf("ERROR")
+	}
+	return logger
+}
+
 // StartWireguard creates a tun interface on netstack given a configuration
-func StartWireguard(conf *Configuration, logLevel int) (*VirtualTun, error) {
+func StartWireguard(conf *Configuration, logLevel int, logWriter io.Writer) (*VirtualTun, error) {
 	deviceConf := conf.Device
 	setting, err := CreateIPCRequest(deviceConf)
 	if err != nil {
 		return nil, err
 	}
 
+	log.Printf("Creating WireGuard device: addresses=%v, DNS=%v, MTU=%d", setting.DeviceAddr, setting.DNS, setting.MTU)
+	for i, peer := range deviceConf.Peers {
+		endpoint := "<none>"
+		if peer.Endpoint != nil {
+			endpoint = *peer.Endpoint
+		}
+		log.Printf("  Peer %d: endpoint=%s, keepalive=%ds, allowedIPs=%v", i+1, endpoint, peer.KeepAlive, peer.AllowedIPs)
+	}
+
 	tun, tnet, err := netstack.CreateNetTUN(setting.DeviceAddr, setting.DNS, setting.MTU)
 	if err != nil {
 		return nil, err
 	}
-	dev := device.NewDevice(tun, conn.NewDefaultBind(), device.NewLogger(logLevel, ""))
+	dev := device.NewDevice(tun, conn.NewDefaultBind(), newDeviceLogger(logLevel, logWriter))
 	err = dev.IpcSet(setting.IpcRequest)
 	if err != nil {
 		dev.Close()
 		return nil, err
 	}
+	log.Printf("WireGuard device configured successfully")
 
 	err = dev.Up()
 	if err != nil {
 		dev.Close()
 		return nil, err
 	}
+	log.Printf("WireGuard device is up")
 
 	hasV4 := false
 	hasV6 := false
@@ -102,6 +129,8 @@ func StartWireguard(conf *Configuration, logLevel int) (*VirtualTun, error) {
 			conf.Resolve.ResolveStrategy = "ipv6"
 		}
 	}
+	log.Printf("Resolve strategy: %s", conf.Resolve.ResolveStrategy)
+
 	return &VirtualTun{
 		Tnet:           tnet,
 		Dev:            dev,
